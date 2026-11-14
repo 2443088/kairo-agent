@@ -1,16 +1,14 @@
 import os
 import sys
-import json
 import asyncio
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
 
-# Pastikan folder root proyek terbaca oleh Python di Vercel
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -31,7 +29,6 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-CRON_SECRET = os.getenv("CRON_SECRET", "kairo_secret_123")
 WITA = ZoneInfo("Asia/Makassar")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -169,109 +166,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await process_with_kairo(update, parts, caption)
 
-def build_ptb_app() -> Application:
-    ptb_app = Application.builder().token(TELEGRAM_TOKEN).build()
-    ptb_app.add_handler(CommandHandler("start", start_cmd))
-    ptb_app.add_handler(CommandHandler("oke", ack_cmd))
-    ptb_app.add_handler(CallbackQueryHandler(handle_callback))
-    ptb_app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.AUDIO | filters.PHOTO, handle_message))
-    return ptb_app
-
-# --- ENDPOINT 1: HEALTH CHECK ---
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"status": "KAIRO 24/7 Webhook Active"}), 200
-
-# --- ENDPOINT 2: TELEGRAM WEBHOOK ---
-@app.route("/api/webhook", methods=["POST"])
+@app.route("/api/webhook", methods=["GET", "POST"])
 def telegram_webhook():
+    if request.method == "GET":
+        return jsonify({"status": "KAIRO Webhook Endpoint Ready"}), 200
+
     data = request.get_json(force=True)
     async def run_update():
-        ptb_app = build_ptb_app()
+        ptb_app = Application.builder().token(TELEGRAM_TOKEN).build()
+        ptb_app.add_handler(CommandHandler("start", start_cmd))
+        ptb_app.add_handler(CommandHandler("oke", ack_cmd))
+        ptb_app.add_handler(CallbackQueryHandler(handle_callback))
+        ptb_app.add_handler(MessageHandler(filters.TEXT | filters.VOICE | filters.AUDIO | filters.PHOTO, handle_message))
         async with ptb_app:
             update = Update.de_json(data, ptb_app.bot)
             await ptb_app.process_update(update)
+
     asyncio.run(run_update())
     return "OK", 200
-
-# --- ENDPOINT 3: NAGGING PING (DIPANGGIL TIAP 5 MENIT OLEH CRON-JOB.ORG) ---
-@app.route("/api/ping", methods=["GET"])
-def cron_ping():
-    if request.args.get("key") != CRON_SECRET:
-        return "Unauthorized", 401
-
-    due_list = database.get_due_reminders()
-    if not due_list:
-        return jsonify({"pinged": 0}), 200
-
-    async def send_pings():
-        ptb_app = build_ptb_app()
-        async with ptb_app:
-            for event_id, summary, category, location, start_time_str, remind_at_str, ping_count in due_list:
-                start_dt = datetime.fromisoformat(start_time_str)
-                jam_str = start_dt.strftime("%H:%M WITA")
-                loc_text = f"\n📍 Lokasi: {location}" if location else ""
-
-                if ping_count == 0:
-                    header = f"⏰ **PENGINGAT KAIRO ({category})**"
-                    nudge = "Waktunya bersiap-siap nih!"
-                elif ping_count == 1:
-                    header = f"🔔 **PING KE-2 — BELUM DIRESPONS!**"
-                    nudge = "Hei, jangan sampai ke-skip ya, jadwal ini sudah dekat."
-                else:
-                    header = f"🚨 **PANGGILAN KE-{ping_count + 1}!**"
-                    nudge = "Saya bakal terus nge-ping tiap 5 menit sampai kamu klik tombol di bawah atau balas 'oke'!"
-
-                text = (
-                    f"{header}\n\n"
-                    f"📌 **{summary}**\n"
-                    f"🕒 Pukul: **{jam_str}**{loc_text}\n\n"
-                    f"_{nudge}_"
-                )
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Oke, Saya Sadar & Siap!", callback_data=f"ack_{event_id}")]
-                ])
-                await ptb_app.bot.send_message(
-                    chat_id=ALLOWED_USER_ID,
-                    text=text,
-                    reply_markup=keyboard,
-                    parse_mode="Markdown"
-                )
-                database.increment_ping(event_id)
-
-    asyncio.run(send_pings())
-    return jsonify({"pinged": len(due_list)}), 200
-
-# --- ENDPOINT 4: MORNING BRIEFING (DIPANGGIL JAM 07.00 WITA OLEH CRON-JOB.ORG) ---
-@app.route("/api/briefing", methods=["GET"])
-def cron_briefing():
-    if request.args.get("key") != CRON_SECRET:
-        return "Unauthorized", 401
-
-    now = datetime.now(WITA)
-    start_day = now.replace(hour=0, minute=0, second=0).isoformat()
-    end_day = now.replace(hour=23, minute=59, second=59).isoformat()
-    agenda_raw = calendar_tools.search_calendar_events(
-        query="",
-        start_date_iso=start_day,
-        end_date_iso=end_day,
-        account_filter="all"
-    )
-    prompt = (
-        f"Hari ini {now.strftime('%A, %d %B %Y')}. Ini daftar jadwal dari Google Calendar user hari ini:\n"
-        f"{agenda_raw}\n\n"
-        "Buatkan pesan Morning Briefing yang singkat, hangat, dan memotivasi untuk user."
-    )
-    resp = ai_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-
-    async def send_brief():
-        ptb_app = build_ptb_app()
-        async with ptb_app:
-            await ptb_app.bot.send_message(
-                chat_id=ALLOWED_USER_ID,
-                text=f"☀️ **Morning Briefing dari KAIRO**\n\n{resp.text}",
-                parse_mode="Markdown"
-            )
-
-    asyncio.run(send_brief())
-    return jsonify({"briefing": "sent"}), 200

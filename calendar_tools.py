@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from google.auth.transport.requests import Request
@@ -11,9 +12,9 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 WITA = ZoneInfo("Asia/Makassar")
 
 ACCOUNTS = {
-    "personal": {"token": "token_personal.json", "email": "hyukayn@gmail.com"},
-    "kerja": {"token": "token_kerja.json", "email": "angelpinkwon9@gmail.com"},
-    "kampus": {"token": "token_kampus.json", "email": "2443088@wicida.ac.id"},
+    "personal": {"token": "token_personal.json", "env": "TOKEN_PERSONAL_JSON", "email": "hyukayn@gmail.com"},
+    "kerja": {"token": "token_kerja.json", "env": "TOKEN_KERJA_JSON", "email": "angelpinkwon9@gmail.com"},
+    "kampus": {"token": "token_kampus.json", "env": "TOKEN_KAMPUS_JSON", "email": "2443088@wicida.ac.id"},
 }
 
 def get_calendar_service(account_type: str = "personal"):
@@ -22,11 +23,17 @@ def get_calendar_service(account_type: str = "personal"):
         account_type = "personal"
 
     token_file = ACCOUNTS[account_type]["token"]
+    env_name = ACCOUNTS[account_type]["env"]
     expected_email = ACCOUNTS[account_type]["email"]
     creds = None
 
-    if os.path.exists(token_file):
+    # 1. Cek jika token disimpan di Environment Variable (untuk server Render)
+    if os.getenv(env_name):
+        creds = Credentials.from_authorized_user_info(json.loads(os.getenv(env_name)), SCOPES)
+    # 2. Jika tidak, cek file lokal (untuk di laptop)
+    elif os.path.exists(token_file):
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -34,8 +41,9 @@ def get_calendar_service(account_type: str = "personal"):
             print(f"\n🔑 SILAKAN LOGIN DI BROWSER UNTUK AKUN [{account_type.upper()}]: {expected_email}")
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(token_file, 'w') as token:
-            token.write(creds.to_json())
+        if not os.getenv(env_name):
+            with open(token_file, 'w') as token:
+                token.write(creds.to_json())
     return build('calendar', 'v3', credentials=creds)
 
 def init_all_calendars():

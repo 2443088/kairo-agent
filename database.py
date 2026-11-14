@@ -1,122 +1,114 @@
-import sqlite3
+import os
+import json
+import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 WITA = ZoneInfo("Asia/Makassar")
-DB_NAME = "kairo_memory.db"
+UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+
+def _redis_cmd(*args):
+    if not UPSTASH_URL or not UPSTASH_TOKEN:
+        return None
+    resp = requests.post(
+        UPSTASH_URL,
+        headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+        json=list(args),
+        timeout=5
+    )
+    return resp.json().get("result")
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    # Tabel antrean Nagging Reminder
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS reminders (
-            event_id TEXT PRIMARY KEY,
-            summary TEXT,
-            category TEXT,
-            location TEXT,
-            start_time TEXT,
-            remind_at TEXT,
-            is_acknowledged INTEGER DEFAULT 0,
-            ping_count INTEGER DEFAULT 0
-        )
-    ''')
-    # Tabel Memori Pribadi Universal (Fakta, Kebiasaan, Lokasi, Kontak)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS memory (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
-    # Pengetahuan awal universal yang bisa terus bertambah otomatis
-    default_memories = {
-        "kampus": "STMIK Widya Cipta Dharma (STMIK WICIDA), Samarinda",
-        "jurusan": "Teknik Informatika",
-        "zona_waktu": "WITA (Asia/Makassar)"
-    }
-    for k, v in default_memories.items():
-        c.execute("INSERT OR IGNORE INTO memory (key, value) VALUES (?, ?)", (k, v))
-    conn.commit()
-    conn.close()
+    pass  # Upstash Redis tidak memerlukan inisialisasi tabel
 
-def upsert_reminder(event_id: str, summary: str, category: str, location: str, start_time_iso: str, lead_minutes: int = 30):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
+def upsert_reminder(event_id: str, summary: str, category: str, location: str, start_time_iso: str, lead_minutes: int):
     start_dt = datetime.fromisoformat(start_time_iso)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=WITA)
     remind_dt = start_dt - timedelta(minutes=lead_minutes)
-    c.execute('''
-        INSERT INTO reminders (event_id, summary, category, location, start_time, remind_at, is_acknowledged, ping_count)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-        ON CONFLICT(event_id) DO UPDATE SET
-            summary=excluded.summary,
-            category=excluded.category,
-            location=excluded.location,
-            start_time=excluded.start_time,
-            remind_at=excluded.remind_at,
-            is_acknowledged=0,
-            ping_count=0
-    ''', (event_id, summary, category, location, start_dt.isoformat(), remind_dt.isoformat()))
-    conn.commit()
-    conn.close()
 
-def delete_reminder(event_id: str):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("DELETE FROM reminders WHERE event_id = ?", (event_id,))
-    conn.commit()
-    conn.close()
-
-def acknowledge_all_active() -> int:
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE reminders SET is_acknowledged = 1 WHERE ping_count > 0 AND is_acknowledged = 0")
-    affected = c.rowcount
-    conn.commit()
-    conn.close()
-    return affected
-
-def acknowledge_event(event_id: str):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE reminders SET is_acknowledged = 1 WHERE event_id = ?", (event_id,))
-    conn.commit()
-    conn.close()
+    data = {
+        "event_id": event_id,
+        "summary": summary,
+        "category": category,
+        "location": location or "",
+        "start_time": start_dt.isoformat(),
+        "remind_at": remind_dt.isoformat(),
+        "ping_count": 0,
+        "acknowledged": False
+    }
+    _redis_cmd("HSET", "kairo:reminders", event_id, json.dumps(data))
 
 def get_due_reminders():
     now = datetime.now(WITA)
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT event_id, summary, category, location, start_time, remind_at, ping_count FROM reminders WHERE is_acknowledged = 0")
-    rows = c.fetchall()
+    raw_all = _redis_cmd("HGETALL", "kairo:reminders") or []
     due = []
-    for row in rows:
-        event_id, summary, category, location, start_time_str, remind_at_str, ping_count = row
-        start_dt = datetime.fromisoformat(start_time_str)
-        remind_dt = datetime.fromisoformat(remind_at_str)
-        # Aktif dari waktu remind_at hingga maksimal 45 menit setelah jadwal dimulai
-        if remind_dt <= now <= (start_dt + timedelta(minutes=45)):
-            due.append(row)
-    conn.close()
+    # HGETALL di REST API mengembalikan list selang-seling [key1, val1, key2, val2, ...]
+    for i in range(0, len(raw_all), 2):
+        item = json.loads(raw_all[i + 1])
+        if item.get("acknowledged"):
+            continue
+        remind_dt = datetime.fromisoformat(item["remind_at"])
+        start_dt = datetime.fromisoformat(item["start_time"])
+        if remind_dt <= now <= (start_dt + timedelta(hours=1)):
+            due.append((
+                item["event_id"],
+                item["summary"],
+                item["category"],
+                item["location"],
+                item["start_time"],
+                item["remind_at"],
+                item["ping_count"]
+            ))
     return due
 
 def increment_ping(event_id: str):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE reminders SET ping_count = ping_count + 1 WHERE event_id = ?", (event_id,))
-    conn.commit()
-    conn.close()
+    raw = _redis_cmd("HGET", "kairo:reminders", event_id)
+    if raw:
+        item = json.loads(raw)
+        item["ping_count"] = item.get("ping_count", 0) + 1
+        _redis_cmd("HSET", "kairo:reminders", event_id, json.dumps(item))
 
-def get_memory_context() -> str:
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT key, value FROM memory")
-    rows = c.fetchall()
-    conn.close()
-    return "\n".join([f"- {k}: {v}" for k, v in rows])
+def acknowledge_event(event_id: str):
+    raw = _redis_cmd("HGET", "kairo:reminders", event_id)
+    if raw:
+        item = json.loads(raw)
+        item["acknowledged"] = True
+        _redis_cmd("HSET", "kairo:reminders", event_id, json.dumps(item))
+
+def acknowledge_all_active() -> int:
+    now = datetime.now(WITA)
+    raw_all = _redis_cmd("HGETALL", "kairo:reminders") or []
+    count = 0
+    for i in range(0, len(raw_all), 2):
+        ev_id = raw_all[i]
+        item = json.loads(raw_all[i + 1])
+        remind_dt = datetime.fromisoformat(item["remind_at"])
+        if not item.get("acknowledged") and item.get("ping_count", 0) > 0 and remind_dt <= now:
+            item["acknowledged"] = True
+            _redis_cmd("HSET", "kairo:reminders", ev_id, json.dumps(item))
+            count += 1
+    return count
+
+def delete_reminder(event_id: str):
+    _redis_cmd("HDEL", "kairo:reminders", event_id)
 
 def save_memory(key: str, value: str):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO memory (key, value) VALUES (?, ?)", (key.lower(), value))
-    conn.commit()
-    conn.close()
+    _redis_cmd("HSET", "kairo:memories", key, value)
+
+def get_memory_context() -> str:
+    raw_all = _redis_cmd("HGETALL", "kairo:memories") or []
+    if not raw_all:
+        return "- Belum ada catatan memori khusus."
+    lines = []
+    for i in range(0, len(raw_all), 2):
+        lines.append(f"- {raw_all[i]}: {raw_all[i + 1]}")
+    return "\n".join(lines)
+
+def get_chat_history() -> list:
+    raw = _redis_cmd("GET", "kairo:chat_history")
+    return json.loads(raw) if raw else []
+
+def save_chat_history(history_list: list):
+    _redis_cmd("SET", "kairo:chat_history", json.dumps(history_list[-12:]))

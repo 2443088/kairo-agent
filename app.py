@@ -50,9 +50,9 @@ Memori Personal User:
 
 ATURAN ROUTING 3 KALENDER (SANGAT PENTING):
 User memiliki 3 akun Google Calendar. Setiap kali membuat/mencari/mengubah jadwal, tentukan `account_type` secara otomatis dari konteks chat:
-1. `kampus` (2443088@wicida.ac.id) -> Semua kegiatan kuliah, seminar proposal (sempro), skripsi, bimbingan dosen, tugas kampus, atau acara di STMIK WICIDA.
-2. `kerja` (angelpinkwon9@gmail.com) -> Semua pekerjaan/proyek seperti membuat aplikasi, coding proyek, desain poster, meeting klien, atau deadline kerja.
-3. `personal` (hyukayn@gmail.com) -> Olahraga/workout, baca buku, jadwal tidur, istirahat, nongkrong, atau urusan pribadi lainnya.
+1. `kampus` ([email-kampus@domain.ac.id]) -> Semua kegiatan kuliah, seminar proposal (sempro), skripsi, bimbingan dosen, tugas kampus, atau acara akademik.
+2. `kerja` ([email-kerja@gmail.com]) -> Semua pekerjaan/proyek seperti membuat aplikasi, coding proyek, desain poster, meeting klien, atau deadline kerja.
+3. `personal` ([email-personal@gmail.com]) -> Olahraga/workout, baca buku, jadwal tidur, istirahat, nongkrong, atau urusan pribadi lainnya.
 
 ATURAN KERJA LAINNYA:
 - DESKRIPSI NARATIF: Ubah catatan singkat user menjadi paragraf deskriptif yang rapi, hidup, dan bermakna, lalu akhiri dengan tagar relevan (contoh: #Kampus #Sempro atau #Kerja #DesainPoster atau #Personal #Workout).
